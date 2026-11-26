@@ -211,6 +211,7 @@ class App(tk.Tk):
                   ).pack(anchor="w", **pad)
         self.txt_accounts = tk.Text(self, height=7, wrap="none")
         self.txt_accounts.pack(fill="x", padx=10)
+        self._enable_clipboard(self.txt_accounts)
         if ACCOUNTS_PATH.exists():
             self.txt_accounts.insert("1.0", ACCOUNTS_PATH.read_text(encoding="utf-8"))
 
@@ -254,6 +255,35 @@ class App(tk.Tk):
 
         self.log_box = tk.Text(self, height=8, state="disabled", bg="#f4f4f4")
         self.log_box.pack(fill="x", padx=10, pady=(4, 10))
+
+    def _enable_clipboard(self, widget):
+        """Ctrl+V/C/X/A работают при любой раскладке (в т.ч. русской) + меню по правой кнопке."""
+        def on_key(event):
+            if event.state & 0x4:  # зажат Ctrl
+                code = event.keycode  # на Windows: V=86, C=67, X=88, A=65
+                if code == 86:
+                    widget.event_generate("<<Paste>>")
+                    return "break"
+                if code == 67:
+                    widget.event_generate("<<Copy>>")
+                    return "break"
+                if code == 88:
+                    widget.event_generate("<<Cut>>")
+                    return "break"
+                if code == 65:
+                    widget.tag_add("sel", "1.0", "end-1c")
+                    return "break"
+        widget.bind("<Key>", on_key)
+
+        menu = tk.Menu(widget, tearoff=0)
+        menu.add_command(label="Вставить", command=lambda: widget.event_generate("<<Paste>>"))
+        menu.add_command(label="Копировать", command=lambda: widget.event_generate("<<Copy>>"))
+        menu.add_command(label="Вырезать", command=lambda: widget.event_generate("<<Cut>>"))
+        menu.add_separator()
+        menu.add_command(label="Выделить всё",
+                         command=lambda: widget.tag_add("sel", "1.0", "end-1c"))
+        widget.bind("<Button-3>",
+                    lambda e: (widget.focus_set(), menu.tk_popup(e.x_root, e.y_root)))
 
     # ---- действия ----
     def log(self, msg):
