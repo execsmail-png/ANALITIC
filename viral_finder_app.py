@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Viral Finder - десктопное приложение для Windows.
+Viral Finder - десктопное приложение для Windows в стиле Apple Music.
 Ищет видео (YouTube Shorts, TikTok, Instagram Reels), у которых
 просмотров >= 140 x числа подписчиков. Помнит, что уже проверил и показал.
 """
@@ -22,6 +22,7 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 import requests
@@ -37,6 +38,23 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 STOP_AFTER_KNOWN = 5  # столько уже проверенных видео подряд = "дошли до старого"
 BROWSERS = {"Нет": None, "Firefox": "firefox", "Edge": "edge",
             "Chrome": "chrome", "Brave": "brave"}
+
+# ---------------- палитра (тёмная тема Apple Music) ----------------
+BG = "#1c1c1e"        # фон контента
+SIDEBAR = "#252527"   # боковая панель
+CARD = "#2c2c2e"      # карточки и поля ввода
+PLAYER = "#2a2a2c"    # нижняя панель
+LINE = "#3a3a3c"      # разделители
+FG = "#ffffff"
+SUB = "#98989f"       # второстепенный текст
+ACCENT = "#fa2d48"    # фирменный красно-розовый
+ACCENT_HI = "#ff5368"
+
+SCALE = 1.0  # масштаб экрана, выставляется при старте
+
+
+def px(n):
+    return int(round(n * SCALE))
 
 
 class SilentLogger:
@@ -89,6 +107,20 @@ def parse_accounts(text):
         url, _, manual = [p.strip() for p in line.partition("|")]
         out.append((url, parse_count(manual) if manual else None))
     return out
+
+
+def short_name(url):
+    m = re.search(r"@([\w.\-]+)", url)
+    if m:
+        return "@" + m.group(1)
+    m = re.search(r"instagram\.com/([\w.]+)", url)
+    if m:
+        return "@" + m.group(1)
+    return url[:40]
+
+
+def fmt(n):
+    return f"{int(n):,}".replace(",", "\u00a0")
 
 
 def video_url(entry, platform):
@@ -188,74 +220,458 @@ def scan_account(con, url, manual, opts, flat, full, log, on_found, stop):
     return count
 
 
-# ---------------- интерфейс ----------------
+# ---------------- рисованные элементы интерфейса ----------------
+def round_rect(c, x1, y1, x2, y2, r, **kw):
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+           x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return c.create_polygon(pts, smooth=True, **kw)
+
+
+def draw_icon(c, kind, cx, cy, color):
+    s = SCALE
+    w = max(2, int(round(2 * s)))
+    if kind == "search":
+        c.create_oval(cx - 7 * s, cy - 7 * s, cx + 3 * s, cy + 3 * s, outline=color, width=w)
+        c.create_line(cx + 2 * s, cy + 2 * s, cx + 8 * s, cy + 8 * s, fill=color,
+                      width=w, capstyle="round")
+    elif kind == "list":
+        for dy in (-6, 0, 6):
+            c.create_line(cx - 8 * s, cy + dy * s, cx + 8 * s, cy + dy * s, fill=color,
+                          width=w, capstyle="round")
+    elif kind == "sliders":
+        c.create_line(cx - 8 * s, cy - 4 * s, cx + 8 * s, cy - 4 * s, fill=color, width=w,
+                      capstyle="round")
+        c.create_line(cx - 8 * s, cy + 4 * s, cx + 8 * s, cy + 4 * s, fill=color, width=w,
+                      capstyle="round")
+        c.create_oval(cx - 5 * s, cy - 7 * s, cx + 1 * s, cy - 1 * s, fill=BG, outline=color, width=w)
+        c.create_oval(cx + 1 * s, cy + 1 * s, cx + 7 * s, cy + 7 * s, fill=BG, outline=color, width=w)
+
+
+def draw_logo(c, size, bg):
+    """Красный скруглённый квадрат с белой буквой V."""
+    c.delete("all")
+    round_rect(c, 1, 1, size - 1, size - 1, size * 0.26, fill=ACCENT, outline=ACCENT)
+    a, b = size * 0.30, size * 0.70
+    c.create_line(a, size * 0.32, size / 2, size * 0.70, b, size * 0.32, fill="white",
+                  width=max(2, int(size * 0.11)), capstyle="round", joinstyle="round")
+
+
+class Pill(tk.Canvas):
+    """Кнопка-«таблетка» со скруглёнными краями."""
+
+    def __init__(self, parent, text, command, font, parent_bg,
+                 fill=CARD, hover=LINE, fg=FG, padx=18, height=34):
+        self.text, self.command, self.font = text, command, font
+        self.fill, self.hover_fill, self.fg = fill, hover, fg
+        self.w = font.measure(text) + px(padx) * 2
+        self.h = px(height)
+        super().__init__(parent, width=self.w, height=self.h, bg=parent_bg,
+                         highlightthickness=0, cursor="hand2")
+        self._draw(fill)
+        self.bind("<Enter>", lambda e: self._draw(self.hover_fill))
+        self.bind("<Leave>", lambda e: self._draw(self.fill))
+        self.bind("<ButtonRelease-1>", lambda e: self.command())
+
+    def _draw(self, color):
+        self.delete("all")
+        round_rect(self, 1, 1, self.w - 1, self.h - 1, self.h // 2, fill=color, outline=color)
+        self.create_text(self.w // 2, self.h // 2, text=self.text, fill=self.fg, font=self.font)
+
+
+class NavItem(tk.Canvas):
+    """Пункт боковой панели с иконкой."""
+
+    def __init__(self, parent, text, icon, on_click, font):
+        super().__init__(parent, height=px(38), bg=SIDEBAR, highlightthickness=0, cursor="hand2")
+        self.text, self.icon, self.font = text, icon, font
+        self.active = self.hovered = False
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<Enter>", lambda e: self._hover(True))
+        self.bind("<Leave>", lambda e: self._hover(False))
+        self.bind("<ButtonRelease-1>", lambda e: on_click())
+
+    def _hover(self, v):
+        self.hovered = v
+        self.redraw()
+
+    def set_active(self, v):
+        self.active = v
+        self.redraw()
+
+    def redraw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if self.active or self.hovered:
+            col = LINE if self.active else "#303032"
+            round_rect(self, 0, 0, w, h, px(8), fill=col, outline=col)
+        draw_icon(self, self.icon, px(22), h // 2, ACCENT)
+        self.create_text(px(46), h // 2, text=self.text, anchor="w", fill=FG, font=self.font)
+
+
+class Toggle(tk.Canvas):
+    """Переключатель в стиле iOS."""
+
+    def __init__(self, parent, var, bg):
+        self.w, self.h = px(46), px(28)
+        super().__init__(parent, width=self.w, height=self.h, bg=bg,
+                         highlightthickness=0, cursor="hand2")
+        self.var = var
+        self.bind("<ButtonRelease-1>", lambda e: self.var.set(not self.var.get()))
+        var.trace_add("write", lambda *a: self.draw())
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        on = self.var.get()
+        col = ACCENT if on else "#48484a"
+        round_rect(self, 1, 1, self.w - 1, self.h - 1, self.h // 2, fill=col, outline=col)
+        r = self.h // 2 - px(3)
+        cx = self.w - self.h // 2 if on else self.h // 2
+        self.create_oval(cx - r, self.h // 2 - r, cx + r, self.h // 2 + r,
+                         fill="white", outline="white")
+
+
+class PlayButton(tk.Canvas):
+    """Большая круглая кнопка: ▶ запустить / ■ остановить."""
+
+    def __init__(self, parent, command, bg):
+        self.d = px(48)
+        super().__init__(parent, width=self.d, height=self.d, bg=bg,
+                         highlightthickness=0, cursor="hand2")
+        self.command, self.running, self.hovered = command, False, False
+        self.bind("<Enter>", lambda e: self._hover(True))
+        self.bind("<Leave>", lambda e: self._hover(False))
+        self.bind("<ButtonRelease-1>", lambda e: self.command())
+        self.draw()
+
+    def _hover(self, v):
+        self.hovered = v
+        self.draw()
+
+    def set_running(self, v):
+        self.running = v
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        d = self.d
+        col = "#e5e5ea" if self.hovered else "#ffffff"
+        self.create_oval(2, 2, d - 2, d - 2, fill=col, outline=col)
+        c = d / 2
+        if self.running:
+            s = d * 0.17
+            round_rect(self, c - s, c - s, c + s, c + s, px(3), fill=BG, outline=BG)
+        else:
+            s = d * 0.18
+            self.create_polygon(c - s * 0.7, c - s * 1.15, c - s * 0.7, c + s * 1.15,
+                                c + s * 1.3, c, fill=BG, outline=BG)
+
+
+# ---------------- главное окно ----------------
 class App(tk.Tk):
     def __init__(self):
+        global SCALE
         super().__init__()
-        self.title("Viral Finder - поиск трендовых видео")
-        self.geometry("1020x760")
-        self.minsize(860, 600)
+        SCALE = self.winfo_fpixels("1i") / 96.0
+        self.title("Viral Finder")
+        self.geometry(f"{px(1120)}x{px(740)}")
+        self.minsize(px(940), px(600))
+        self.configure(bg=BG)
+
         self.q = queue.Queue()
         self.stop_event = threading.Event()
         self.worker = None
-        self._build()
-        self._load_history()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(100, self._poll)
+        self.session_found = 0
 
-    def _build(self):
-        pad = {"padx": 10, "pady": 4}
+        self._setup_fonts()
+        self._setup_styles()
+        self._setup_icon()
 
-        ttk.Label(self, text="Ссылки на аккаунты TikTok / каналы YouTube / профили Instagram "
-                             "(по одной в строке; если нужно: ссылка | подписчики)"
-                  ).pack(anchor="w", **pad)
-        self.txt_accounts = tk.Text(self, height=7, wrap="none")
-        self.txt_accounts.pack(fill="x", padx=10)
-        self._enable_clipboard(self.txt_accounts)
-        if ACCOUNTS_PATH.exists():
-            self.txt_accounts.insert("1.0", ACCOUNTS_PATH.read_text(encoding="utf-8"))
-
-        opts = ttk.Frame(self)
-        opts.pack(fill="x", **pad)
         self.var_mult = tk.StringVar(value="140")
         self.var_limit = tk.StringVar(value="50")
         self.var_full = tk.BooleanVar(value=False)
         self.var_browser = tk.StringVar(value="Нет")
-        ttk.Label(opts, text="Просмотры ≥ подписчики ×").pack(side="left")
-        ttk.Spinbox(opts, from_=1, to=100000, width=7, textvariable=self.var_mult).pack(side="left", padx=(4, 14))
-        ttk.Label(opts, text="Последних видео:").pack(side="left")
-        ttk.Spinbox(opts, from_=5, to=500, width=5, textvariable=self.var_limit).pack(side="left", padx=(4, 14))
-        ttk.Label(opts, text="Куки из браузера (для Instagram):").pack(side="left")
-        ttk.Combobox(opts, values=list(BROWSERS), textvariable=self.var_browser,
-                     width=9, state="readonly").pack(side="left", padx=(4, 14))
-        ttk.Checkbutton(opts, text="Перепроверить всё заново",
-                        variable=self.var_full).pack(side="left")
+        self.status_title = tk.StringVar(value="Готов к поиску")
+        self.status_sub = tk.StringVar(value="Добавь ссылки на аккаунты и нажми ▶")
+        self.total_text = tk.StringVar(value="")
 
-        btns = ttk.Frame(self)
-        btns.pack(fill="x", **pad)
-        self.btn_start = ttk.Button(btns, text="▶ Найти", command=self.start)
-        self.btn_start.pack(side="left")
-        self.btn_stop = ttk.Button(btns, text="■ Стоп", command=self.stop, state="disabled")
-        self.btn_stop.pack(side="left", padx=6)
-        ttk.Button(btns, text="Копировать ссылки", command=self.copy_links).pack(side="left", padx=6)
-        ttk.Button(btns, text="Экспорт в CSV", command=self.export_csv).pack(side="left")
-        ttk.Button(btns, text="Забыть историю", command=self.reset_history).pack(side="right")
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(0, weight=1)
+        self._build_sidebar()
+        self._build_pages()
+        self._build_player()
+        self.show_page("search")
 
+        self._load_history()
+        self._dark_titlebar()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(100, self._poll)
+
+    # ---- оформление ----
+    def _setup_fonts(self):
+        fams = set(tkfont.families())
+        body = next((f for f in ("Segoe UI Variable Text", "Segoe UI") if f in fams), "Segoe UI")
+        disp = next((f for f in ("Segoe UI Variable Display", "Segoe UI") if f in fams), "Segoe UI")
+        self.fam = body
+        self.f_title = tkfont.Font(family=disp, size=24, weight="bold")
+        self.f_h2 = tkfont.Font(family=disp, size=13, weight="bold")
+        self.f_body = tkfont.Font(family=body, size=11)
+        self.f_body_b = tkfont.Font(family=body, size=11, weight="bold")
+        self.f_small = tkfont.Font(family=body, size=10)
+        self.f_nav = tkfont.Font(family=body, size=11)
+        self.f_mono = tkfont.Font(family="Consolas", size=9)
+
+    def _setup_styles(self):
+        st = ttk.Style(self)
+        st.theme_use("clam")
+        st.configure("Treeview", background=BG, fieldbackground=BG, foreground=FG,
+                     rowheight=px(42), borderwidth=0, relief="flat", font=self.f_body)
+        st.map("Treeview", background=[("selected", LINE)], foreground=[("selected", FG)])
+        st.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        st.configure("Treeview.Heading", background=BG, foreground=SUB, relief="flat",
+                     borderwidth=0, bordercolor=BG, lightcolor=BG, darkcolor=BG,
+                     font=(self.fam, 10, "bold"), padding=(px(8), px(8)))
+        st.map("Treeview.Heading", background=[("active", BG)])
+        st.layout("Vertical.TScrollbar",
+                  [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+                      ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+        st.configure("Vertical.TScrollbar", background="#48484a", troughcolor=BG,
+                     bordercolor=BG, lightcolor="#48484a", darkcolor="#48484a",
+                     relief="flat", width=px(10))
+        st.map("Vertical.TScrollbar", background=[("active", "#636366")])
+        st.configure("TSpinbox", fieldbackground=LINE, foreground=FG, background=LINE,
+                     arrowcolor=FG, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE,
+                     insertcolor=FG, padding=px(4))
+        st.configure("TCombobox", fieldbackground=LINE, background=LINE, foreground=FG,
+                     arrowcolor=FG, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE,
+                     selectbackground=LINE, selectforeground=FG, padding=px(4))
+        st.map("TCombobox", fieldbackground=[("readonly", LINE)],
+               foreground=[("readonly", FG)], selectbackground=[("readonly", LINE)],
+               selectforeground=[("readonly", FG)])
+        self.option_add("*TCombobox*Listbox.background", CARD)
+        self.option_add("*TCombobox*Listbox.foreground", FG)
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        self.option_add("*TCombobox*Listbox.selectForeground", "white")
+        self.option_add("*TCombobox*Listbox.font", self.f_body)
+
+    def _setup_icon(self):
+        try:
+            img = tk.PhotoImage(width=64, height=64)
+            r = 14
+            for y in range(64):
+                inset = 0
+                if y < r:
+                    inset = r - int((r * r - (r - y) ** 2) ** 0.5)
+                elif y >= 64 - r:
+                    inset = r - int((r * r - (y - (63 - r)) ** 2) ** 0.5)
+                img.put(ACCENT, to=(inset, y, 64 - inset, y + 1))
+            for y in range(16, 49):
+                t = (y - 16) / 32.0
+                for xc in (18 + 14 * t, 46 - 14 * t):
+                    img.put("#ffffff", to=(int(xc) - 3, y, int(xc) + 4, y + 1))
+            self.iconphoto(True, img)
+            self._icon = img
+        except Exception:
+            pass
+
+    def _dark_titlebar(self):
+        """Тёмный заголовок окна (Windows 10/11)."""
+        try:
+            import ctypes
+            self.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            dwm = ctypes.windll.dwmapi
+            for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(ctypes.c_int(1)), 4)
+            dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(ctypes.c_int(0x001E1C1C)), 4)  # цвет заголовка
+            self.withdraw()
+            self.deiconify()
+        except Exception:
+            pass
+
+    # ---- боковая панель ----
+    def _build_sidebar(self):
+        side = tk.Frame(self, bg=SIDEBAR, width=px(230))
+        side.grid(row=0, column=0, sticky="ns")
+        side.grid_propagate(False)
+        side.pack_propagate(False)
+
+        brand = tk.Frame(side, bg=SIDEBAR)
+        brand.pack(fill="x", padx=px(16), pady=(px(22), px(18)))
+        logo = tk.Canvas(brand, width=px(30), height=px(30), bg=SIDEBAR, highlightthickness=0)
+        logo.pack(side="left")
+        draw_logo(logo, px(30), SIDEBAR)
+        tk.Label(brand, text="Viral Finder", bg=SIDEBAR, fg=FG,
+                 font=self.f_h2).pack(side="left", padx=px(10))
+
+        self.nav = {}
+        for key, text, icon in (("search", "Поиск", "search"),
+                                ("results", "Находки", "list"),
+                                ("settings", "Настройки", "sliders")):
+            item = NavItem(side, text, icon, lambda k=key: self.show_page(k), self.f_nav)
+            item.pack(fill="x", padx=px(10), pady=px(2))
+            self.nav[key] = item
+
+        tk.Label(side, text="Трендовые видео:\nпросмотры ≥ подписчики × порог",
+                 bg=SIDEBAR, fg=SUB, font=self.f_small, justify="left",
+                 anchor="w").pack(side="bottom", fill="x", padx=px(18), pady=px(16))
+
+    # ---- страницы ----
+    def _build_pages(self):
+        self.content = tk.Frame(self, bg=BG)
+        self.content.grid(row=0, column=1, sticky="nsew")
+        self.content.rowconfigure(0, weight=1)
+        self.content.columnconfigure(0, weight=1)
+        self.pages = {}
+        self._page_search()
+        self._page_results()
+        self._page_settings()
+
+    def _page_search(self):
+        page = self._new_page("search")
+        tk.Label(page, text="Поиск", bg=BG, fg=FG, font=self.f_title).pack(anchor="w")
+        tk.Label(page, bg=BG, fg=SUB, font=self.f_body, justify="left", anchor="w",
+                 text="Вставь ссылки на аккаунты TikTok, каналы YouTube и профили Instagram — "
+                      "по одной в строке.\nЕсли число подписчиков не определилось, допиши его: "
+                      "ссылка | 12500"
+                 ).pack(anchor="w", pady=(px(4), px(14)))
+
+        card = tk.Frame(page, bg=CARD, padx=px(4), pady=px(4))
+        card.pack(fill="both", expand=True)
+        self.txt_accounts = tk.Text(card, wrap="none", bg=CARD, fg=FG, insertbackground=FG,
+                                    relief="flat", bd=0, highlightthickness=0, font=self.f_body,
+                                    padx=px(12), pady=px(10), selectbackground=ACCENT,
+                                    selectforeground="white", height=8)
+        self.txt_accounts.pack(fill="both", expand=True)
+        if ACCOUNTS_PATH.exists():
+            self.txt_accounts.insert("1.0", ACCOUNTS_PATH.read_text(encoding="utf-8"))
+        self._enable_clipboard(self.txt_accounts)
+
+        tk.Label(page, text="Журнал", bg=BG, fg=FG, font=self.f_h2).pack(anchor="w", pady=(px(18), px(6)))
+        logcard = tk.Frame(page, bg=SIDEBAR, padx=px(4), pady=px(4))
+        logcard.pack(fill="x")
+        self.log_box = tk.Text(logcard, height=7, state="disabled", bg=SIDEBAR, fg=SUB,
+                               relief="flat", bd=0, highlightthickness=0, font=self.f_mono,
+                               padx=px(10), pady=px(8), wrap="word")
+        self.log_box.pack(fill="x")
+
+    def _page_results(self):
+        page = self._new_page("results")
+        head = tk.Frame(page, bg=BG)
+        head.pack(fill="x")
+        tk.Label(head, text="Находки", bg=BG, fg=FG, font=self.f_title).pack(side="left")
+        Pill(head, "Экспорт CSV", self.export_csv, self.f_small, BG).pack(side="right")
+        Pill(head, "Копировать ссылки", self.copy_links, self.f_small, BG).pack(side="right", padx=px(8))
+        tk.Label(page, text="Двойной клик по строке открывает видео в браузере.", bg=BG, fg=SUB,
+                 font=self.f_body, anchor="w").pack(anchor="w", pady=(px(4), px(12)))
+
+        wrap = tk.Frame(page, bg=BG)
+        wrap.pack(fill="both", expand=True)
         cols = ("account", "views", "followers", "ratio", "link", "found")
         heads = ("Аккаунт", "Просмотры", "Подписчики", "×", "Ссылка на видео", "Найдено")
-        widths = (220, 90, 90, 60, 360, 110)
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12,
-                                 selectmode="extended")
+        widths = (150, 110, 110, 70, 300, 130)
+        self.tree = ttk.Treeview(wrap, columns=cols, show="headings", selectmode="extended")
         for c, h, w in zip(cols, heads, widths):
-            self.tree.heading(c, text=h)
-            self.tree.column(c, width=w, anchor="w")
-        self.tree.pack(fill="both", expand=True, padx=10, pady=4)
+            self.tree.heading(c, text=h, anchor="w")
+            self.tree.column(c, width=px(w), anchor="w", stretch=(c == "link"))
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", self._open_link)
-        ttk.Label(self, text="Двойной клик по строке - открыть видео в браузере").pack(anchor="w", padx=10)
+        self.empty_lbl = tk.Label(wrap, bg=BG, fg=SUB, font=self.f_body, justify="center",
+                                  text="Пока ничего не найдено\nЗапусти поиск — трендовые видео появятся здесь")
 
-        self.log_box = tk.Text(self, height=8, state="disabled", bg="#f4f4f4")
-        self.log_box.pack(fill="x", padx=10, pady=(4, 10))
+    def _page_settings(self):
+        page = self._new_page("settings")
+        tk.Label(page, text="Настройки", bg=BG, fg=FG, font=self.f_title).pack(anchor="w", pady=(0, px(14)))
 
+        card = tk.Frame(page, bg=CARD)
+        card.pack(fill="x")
+        r = self._setting_row(card, "Порог просмотров",
+                              "Видео считается трендовым, если просмотров не меньше, "
+                              "чем подписчики × это число.", first=True)
+        ttk.Spinbox(r, from_=1, to=100000, width=8, textvariable=self.var_mult).pack()
+        r = self._setting_row(card, "Глубина проверки",
+                              "Сколько последних видео смотреть у каждого аккаунта.")
+        ttk.Spinbox(r, from_=5, to=500, width=8, textvariable=self.var_limit).pack()
+        r = self._setting_row(card, "Куки из браузера",
+                              "Нужны для Instagram и иногда для TikTok. Выбери браузер, где ты "
+                              "вошёл в аккаунт (надёжнее всего — Firefox) и закрой его перед поиском.")
+        ttk.Combobox(r, values=list(BROWSERS), textvariable=self.var_browser, width=10,
+                     state="readonly").pack()
+        r = self._setting_row(card, "Перепроверить всё заново",
+                              "Игнорировать память о проверенных видео. "
+                              "Уже показанные ссылки всё равно не повторяются.")
+        Toggle(r, self.var_full, CARD).pack()
+
+        tk.Label(page, text="Данные", bg=BG, fg=FG, font=self.f_h2).pack(anchor="w", pady=(px(22), px(8)))
+        Pill(page, "Забыть историю", self.reset_history, self.f_body, BG,
+             fill=CARD, hover=LINE, fg=ACCENT, height=38).pack(anchor="w")
+
+    def _new_page(self, key):
+        page = tk.Frame(self.content, bg=BG, padx=px(34), pady=px(28))
+        page.grid(row=0, column=0, sticky="nsew")
+        self.pages[key] = page
+        return page
+
+    def _setting_row(self, parent, title, sub, first=False):
+        if not first:
+            tk.Frame(parent, bg=LINE, height=1).pack(fill="x", padx=px(16))
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill="x")
+        right = tk.Frame(row, bg=CARD)
+        right.pack(side="right", padx=px(18))
+        left = tk.Frame(row, bg=CARD)
+        left.pack(side="left", fill="x", expand=True, padx=px(18), pady=px(13))
+        tk.Label(left, text=title, bg=CARD, fg=FG, font=self.f_body_b, anchor="w").pack(anchor="w")
+        tk.Label(left, text=sub, bg=CARD, fg=SUB, font=self.f_small, anchor="w",
+                 justify="left", wraplength=px(480)).pack(anchor="w", pady=(px(2), 0))
+        return right
+
+    def show_page(self, name):
+        self.pages[name].tkraise()
+        for k, item in self.nav.items():
+            item.set_active(k == name)
+
+    # ---- нижняя панель (как плеер в Apple Music) ----
+    def _build_player(self):
+        bar = tk.Frame(self, bg=PLAYER)
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.progress = tk.Canvas(bar, height=px(3), bg=LINE, highlightthickness=0)
+        self.progress.pack(fill="x")
+
+        inner = tk.Frame(bar, bg=PLAYER)
+        inner.pack(fill="x", padx=px(18), pady=px(10))
+        inner.columnconfigure(0, weight=1, uniform="p")
+        inner.columnconfigure(1, weight=0)
+        inner.columnconfigure(2, weight=1, uniform="p")
+
+        left = tk.Frame(inner, bg=PLAYER)
+        left.grid(row=0, column=0, sticky="w")
+        logo = tk.Canvas(left, width=px(46), height=px(46), bg=PLAYER, highlightthickness=0)
+        logo.pack(side="left")
+        draw_logo(logo, px(46), PLAYER)
+        txt = tk.Frame(left, bg=PLAYER)
+        txt.pack(side="left", padx=px(12))
+        tk.Label(txt, textvariable=self.status_title, bg=PLAYER, fg=FG,
+                 font=self.f_body_b, anchor="w").pack(anchor="w")
+        tk.Label(txt, textvariable=self.status_sub, bg=PLAYER, fg=SUB,
+                 font=self.f_small, anchor="w").pack(anchor="w")
+
+        self.play = PlayButton(inner, self.toggle_run, PLAYER)
+        self.play.grid(row=0, column=1, padx=px(20))
+
+        tk.Label(inner, textvariable=self.total_text, bg=PLAYER, fg=SUB,
+                 font=self.f_small, anchor="e").grid(row=0, column=2, sticky="e")
+
+    def _set_progress(self, frac):
+        self.progress.delete("all")
+        w = self.progress.winfo_width()
+        if frac > 0:
+            self.progress.create_rectangle(0, 0, int(w * frac), px(3), fill=ACCENT, outline=ACCENT)
+
+    # ---- буфер обмена ----
     def _enable_clipboard(self, widget):
         """Ctrl+V/C/X/A работают при любой раскладке (в т.ч. русской) + меню по правой кнопке."""
         def on_key(event):
@@ -275,7 +691,8 @@ class App(tk.Tk):
                     return "break"
         widget.bind("<Key>", on_key)
 
-        menu = tk.Menu(widget, tearoff=0)
+        menu = tk.Menu(widget, tearoff=0, bg=CARD, fg=FG, activebackground=ACCENT,
+                       activeforeground="white", bd=0, font=self.f_body)
         menu.add_command(label="Вставить", command=lambda: widget.event_generate("<<Paste>>"))
         menu.add_command(label="Копировать", command=lambda: widget.event_generate("<<Copy>>"))
         menu.add_command(label="Вырезать", command=lambda: widget.event_generate("<<Cut>>"))
@@ -292,6 +709,14 @@ class App(tk.Tk):
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
+    def _refresh_empty(self):
+        if self.tree.get_children():
+            self.empty_lbl.place_forget()
+            self.total_text.set(f"Всего находок: {len(self.tree.get_children())}")
+        else:
+            self.empty_lbl.place(relx=0.5, rely=0.4, anchor="center")
+            self.total_text.set("")
+
     def _load_history(self):
         con = open_db()
         rows = con.execute("SELECT account, views, followers, ratio, url, found_at "
@@ -299,17 +724,25 @@ class App(tk.Tk):
         con.close()
         for r in rows:
             self._add_row(r, top=False)
+        self._refresh_empty()
 
     def _add_row(self, r, top=True):
         account, views, followers, ratio, link, found_at = r
         self.tree.insert("", 0 if top else "end",
-                         values=(account, f"{views:,}", f"{followers:,}",
-                                 f"{ratio:,.0f}", link, found_at))
+                         values=(short_name(account), fmt(views), fmt(followers),
+                                 f"×{ratio:,.0f}", link, found_at))
+
+    def toggle_run(self):
+        if self.worker and self.worker.is_alive():
+            self.stop()
+        else:
+            self.start()
 
     def start(self):
         accounts = parse_accounts(self.txt_accounts.get("1.0", "end"))
         if not accounts:
-            messagebox.showinfo("Viral Finder", "Вставь хотя бы одну ссылку.")
+            messagebox.showinfo("Viral Finder", "Вставь хотя бы одну ссылку на странице «Поиск».")
+            self.show_page("search")
             return
         try:
             opts = {"mult": float(self.var_mult.get()),
@@ -317,18 +750,22 @@ class App(tk.Tk):
                     "full": self.var_full.get(),
                     "browser": BROWSERS[self.var_browser.get()]}
         except ValueError:
-            messagebox.showerror("Viral Finder", "Проверь числа в настройках.")
+            messagebox.showerror("Viral Finder", "Проверь числа на странице «Настройки».")
             return
         ACCOUNTS_PATH.write_text(self.txt_accounts.get("1.0", "end").strip(), encoding="utf-8")
         self.stop_event.clear()
-        self.btn_start.configure(state="disabled")
-        self.btn_stop.configure(state="normal")
+        self.session_found = 0
+        self.play.set_running(True)
+        self.status_title.set("Ищу трендовые видео")
+        self.status_sub.set("Подготовка…")
+        self._set_progress(0.02)
         self.log("Поиск запущен...")
         self.worker = threading.Thread(target=self._run, args=(accounts, opts), daemon=True)
         self.worker.start()
 
     def stop(self):
         self.stop_event.set()
+        self.status_sub.set("Останавливаю…")
         self.log("Останавливаю...")
 
     def _run(self, accounts, opts):
@@ -343,14 +780,17 @@ class App(tk.Tk):
             full = YoutubeDL(base)
             log = lambda m: self.q.put(("log", m))
             found = lambda r: self.q.put(("found", r))
-            for url, manual in accounts:
+            n = len(accounts)
+            for i, (url, manual) in enumerate(accounts, 1):
                 if self.stop_event.is_set():
                     break
+                self.q.put(("status", (short_name(url), i, n)))
                 try:
                     total += scan_account(con, url, manual, opts, flat, full,
                                           log, found, self.stop_event)
                 except Exception as e:
                     log(f"   ! ошибка: {str(e)[:200]}")
+                self.q.put(("progress", i / n))
         except Exception as e:
             self.q.put(("log", f"Ошибка запуска: {str(e)[:300]}"))
         finally:
@@ -365,10 +805,24 @@ class App(tk.Tk):
                     self.log(data)
                 elif kind == "found":
                     self._add_row(data)
+                    self.session_found += 1
+                    self._refresh_empty()
+                    self.status_sub.set(f"Найдено новых: {self.session_found}")
+                elif kind == "status":
+                    name, i, n = data
+                    self.status_title.set("Ищу трендовые видео")
+                    self.status_sub.set(f"Проверяю {name} · {i} из {n} · найдено: {self.session_found}")
+                elif kind == "progress":
+                    self._set_progress(data)
                 elif kind == "done":
+                    stopped = self.stop_event.is_set()
                     self.log(f"\nГотово. Новых трендовых видео: {data}")
-                    self.btn_start.configure(state="normal")
-                    self.btn_stop.configure(state="disabled")
+                    self.status_title.set("Поиск остановлен" if stopped else "Поиск завершён")
+                    self.status_sub.set(f"Новых находок: {data}")
+                    self.play.set_running(False)
+                    self._set_progress(0 if stopped else 1)
+                    if data and not stopped:
+                        self.show_page("results")
         except queue.Empty:
             pass
         self.after(100, self._poll)
@@ -376,17 +830,18 @@ class App(tk.Tk):
     def _open_link(self, _event):
         sel = self.tree.selection()
         if sel:
-            webbrowser.open(self.tree.item(sel[0], "values")[4])
+            webbrowser.open(str(self.tree.item(sel[0], "values")[4]))
 
     def _links(self):
         items = self.tree.selection() or self.tree.get_children()
-        return [self.tree.item(i, "values")[4] for i in items]
+        return [str(self.tree.item(i, "values")[4]) for i in items]
 
     def copy_links(self):
         links = self._links()
         self.clipboard_clear()
         self.clipboard_append("\n".join(links))
-        self.log(f"Скопировано ссылок: {len(links)}")
+        self.status_title.set("Ссылки скопированы")
+        self.status_sub.set(f"Скопировано ссылок: {len(links)}")
 
     def export_csv(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv",
@@ -398,8 +853,13 @@ class App(tk.Tk):
             w = csv.writer(f)
             w.writerow(["Аккаунт", "Просмотры", "Подписчики", "x", "Ссылка", "Найдено"])
             for i in self.tree.get_children():
-                w.writerow(self.tree.item(i, "values"))
-        self.log(f"Сохранено: {path}")
+                v = [str(x) for x in self.tree.item(i, "values")]
+                v[1] = v[1].replace("\u00a0", "")
+                v[2] = v[2].replace("\u00a0", "")
+                v[3] = v[3].lstrip("×")
+                w.writerow(v)
+        self.status_title.set("Файл сохранён")
+        self.status_sub.set(path)
 
     def reset_history(self):
         if not messagebox.askyesno("Viral Finder",
@@ -411,7 +871,9 @@ class App(tk.Tk):
         con.commit()
         con.close()
         self.tree.delete(*self.tree.get_children())
-        self.log("История очищена.")
+        self._refresh_empty()
+        self.status_title.set("История очищена")
+        self.status_sub.set("Память о проверенных видео сброшена")
 
     def _on_close(self):
         try:
@@ -423,4 +885,9 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    try:  # чёткий текст на экранах с масштабированием
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
     App().mainloop()
